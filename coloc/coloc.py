@@ -1,27 +1,35 @@
 #!/usr/bin/env python3
 import requests
 import re
-from functools import lru_cache
 from pysam import VariantFile
 import numpy as np
 import pandas as pd
-from collections import Counter
+import sys
+import yaml
+from shutil import copyfile
+import os
+import logging
+
+"""
+take a list of vcfs
+
+Check input, non-overlapping csqs, allow zero entries in one
+
+can we have case/ctrl status in the output IBD/UC/CD ideally
+
+/lustre/scratch115/projects/ibdgwas/HLA/HLA_imputations/2D/best_guess/GWAS3
+
+"""
 
 # url_server = 'https://rest.ensembl.org'
 url_server = 'https://grch37.rest.ensembl.org'
 
 annotation_vcf_file_path = '/lustre/scratch115/realdata/mdt0/teams/barrett/users/dr9/vep-annotation/all_studies.sampleids_cleaned_to_lowercase.bcf.gz.annot.vcf.gz'
+variant_file_path = '/lustre/scratch119/realdata/mdt2/teams/anderson/users/dr9/new_imputation_dan/all_studies.sampleids_cleaned_to_lowercase.bcf.gz' 
 
-# from pysam import TabixFile
-
-# tbx = TabixFile('/lustre/scratch115/realdata/mdt0/teams/barrett/users/dr9/vep-annotation/all_studies.sampleids_cleaned_to_lowercase.bcf.gz.annot.head.chrompos.gz')
-# for header in tbx.header:
-#     pass
-# header = header.decode().split('\t')
-
-# rows = []
-# for row in tbx.fetch("1", 727655-1, 727655+1):
-#     rows.append(row.split('\t'))
+root_file_path = '/lustre/scratch119/realdata/mdt2/teams/anderson/users/dr9/new_imputation_dan/{}.sampleids_cleaned_to_lowercase.bcf.gz'
+studies = ['GWAS1', 'GWAS2', 'GWAS3', 'ichip', 'newwave']
+variant_file_paths = {study: VariantFile(root_file_path.format(study)) for study in studies}
 
 re_location = re.compile(r'(?P<chrom>\w+):(?P<start>\d+)-(?P<end>\d+)')
 
@@ -64,12 +72,16 @@ POLYPHEN_PREDICTIONS_LO_HI = {
     'benign': 0,
     'unknown': 1,
     'possibly damaging': 2,
+    'possibly_damaging': 2,
     'probably damaging': 3,
+    'probably_damaging': 3,
 }
 
 SIFT_PREDICTIONS_LO_HI = {
     'tolerated': 0,
-    'deleterious': 1,
+    'tolerated_low_confidence': 1,
+    'deleterious_low_confidence': 2,
+    'deleterious': 3,
 }
 
 def extract_chrom_start_end(location):
@@ -160,9 +172,9 @@ def variant_has_greater_equal_MAF(rsid, minimum_maf=0.05, population='EUR'):
     variation_frequency = get_variation_frequency(rsid, population)
     minor_allele = variation_frequency['minor_allele']
     if minor_allele is None:
-        print(variation_frequency)
+        # print(variation_frequency)
         raise Exception('abc')
-    print('minor_allele', minor_allele)
+    # print('minor_allele', minor_allele)
     passed = [x for x in variation_frequency['populations'] if 
                 x['population'] == f'1000GENOMES:{population}' and
                 x['allele'] == minor_allele and 
@@ -183,44 +195,44 @@ def sort_eqtl_info_by_minus_log10_p_value(eqtl_info):
     return sorted(eqtl_info, key=lambda x:float(x['minus_log10_p_value']), reverse=True)
 
 
-def get_genotype_accumulation_from_variant_file(variants, variant_file_path):
-    """
-    Discard samples
+# def get_genotype_accumulation_from_variant_file(variants, variant_file_path):
+#     """
+#     Discard samples
     
-    eventually use a set of files
+#     eventually use a set of files
     
-        seq_region_name
-        start
-        end
-    """
-    variant_file = VariantFile(variant_file_path)
+#         seq_region_name
+#         start
+#         end
+#     """
+#     variant_file = VariantFile(variant_file_path)
 
-    n_samples = get_number_of_samples(variant_file_path)
-    n_variants = len(variants)
-    GENOTYPES = np.zeros((n_samples, 2*n_variants), dtype=np.float16)
+#     n_samples = get_number_of_samples(variant_file_path)
+#     n_variants = len(variants)
+#     GENOTYPES = np.zeros((n_samples, 2*n_variants), dtype=np.float16)
 
-    for variant_index, variant in enumerate(variants):
-        print('variant_index', variant_index)
-        chrom = variant['seq_region_name']
-        start = variant['start'] - 1
-        end = variant['end']
+#     for variant_index, variant in enumerate(variants):
+#         print('variant_index', variant_index)
+#         chrom = variant['seq_region_name']
+#         start = variant['start'] - 1
+#         end = variant['end']
 
-        records = list(variant_file.fetch(chrom, start, end))
+#         records = list(variant_file.fetch(chrom, start, end))
 
-        n_records = 0
-        for record in records:
-            n_records += 1
-            if n_records > 1:
-                raise Exception(f'More than one record found for {chrom}:{start}-{end}')
-            print(chrom, start, end)
-            genotypes = [s['GT'] for s in record.samples.values()]
-            genotypes = np.array(genotypes, dtype=np.float16)
-            GENOTYPES += genotypes
+#         n_records = 0
+#         for record in records:
+#             n_records += 1
+#             if n_records > 1:
+#                 raise Exception(f'More than one record found for {chrom}:{start}-{end}')
+#             print(chrom, start, end)
+#             genotypes = [s['GT'] for s in record.samples.values()]
+#             genotypes = np.array(genotypes, dtype=np.float16)
+#             GENOTYPES += genotypes
 
-    #         print('len(np.where(genotypes > 0)[0])', len(np.where(genotypes > 0)[0]))
-    #         print('len(np.where(GENOTYPES > 0)[0])', len(np.where(GENOTYPES > 0)[0]))
+#     #         print('len(np.where(genotypes > 0)[0])', len(np.where(genotypes > 0)[0]))
+#     #         print('len(np.where(GENOTYPES > 0)[0])', len(np.where(GENOTYPES > 0)[0]))
     
-    return GENOTYPES, variant_file.header.samples
+#     return GENOTYPES, variant_file.header.samples
 
 
 def get_genotypes_from_variant_file(variants, variant_file_path):
@@ -229,7 +241,9 @@ def get_genotypes_from_variant_file(variants, variant_file_path):
     
     n_samples = get_number_of_samples(variant_file_path)
     n_variants = len(variants)
-    GENOTYPES = np.zeros((n_samples, n_variants, 2), dtype=np.float16)
+    GENOTYPES = np.empty((n_samples, n_variants, 2), dtype=np.float16)
+    GENOTYPES[:] = np.nan
+    found_variants = []
 
     for variant_index, variant in enumerate(variants):
         chrom = variant['seq_region_name']
@@ -246,8 +260,10 @@ def get_genotypes_from_variant_file(variants, variant_file_path):
             genotypes = [s['GT'] for s in record.samples.values()]
             genotypes = np.array(genotypes, dtype=np.float16)
             GENOTYPES[:,variant_index] = genotypes
-            
-    return GENOTYPES, variant_file.header.samples
+            found_variants.append(variant)
+
+    samples = list(variant_file.header.samples)
+    return GENOTYPES, samples, found_variants
 
 
 def test_classify_sample_genotypes():
@@ -310,7 +326,7 @@ def classify_sample_genotypes(genotypes):
     found_homozygous = (homozygous == genotypes).all(axis=1)
     n_homozygous = sum(found_homozygous)
     if n_homozygous > 0:
-        return 'homozygous', n_homozygous
+        return 'hom', n_homozygous
 
     genotypes_nans_to_zero = genotypes.copy()
     nans = np.isnan(genotypes_nans_to_zero)
@@ -320,24 +336,29 @@ def classify_sample_genotypes(genotypes):
 
     found_compound_heterozygous = (n_alt > 0).all()
     if found_compound_heterozygous:
-        return 'compound_heterozygous', n_alt.sum()
+        return 'comphet', n_alt.sum()
 
     found_heterozygous = (n_alt > 0).any()
     if found_heterozygous:
-        return 'heterozygous', max(n_alt)
+        return 'het', max(n_alt)
     
     reference = np.array([0.,0.])
-    found_reference = (reference == genotypes_nans_to_zero).all(axis=1)
+    found_reference = (reference == genotypes).all()
     if found_reference.all():
-        n_nan_rows = nans.any(axis=1).sum()
-        n_reference = found_reference.sum() - n_nan_rows
-        return 'reference', n_reference
-    
-    
+        n_reference = len(reference)
+        return 'ref', n_reference
+
+
 def classify_all_genotypes(GENOTYPES, samples):
     L = []
+    n_samples, n_variants, _ = GENOTYPES.shape
+    logging.info(f'...found {n_samples} samples; {n_variants} variants.')
     for genotypes, sample in zip(GENOTYPES, samples):
-        genotype_class, n = classify_sample_genotypes(genotypes)
+        genotype_class_n = classify_sample_genotypes(genotypes)
+        if genotype_class_n:
+            genotype_class, n = genotype_class_n
+        else:
+            genotype_class, n = 'undet', '.'
         L.append({
             'genotype_class': genotype_class,
             'n': n,
@@ -345,10 +366,7 @@ def classify_all_genotypes(GENOTYPES, samples):
         })
     df = pd.DataFrame(L)
     return df
-    
-#     c = Counter([x[0] for x in classes])
-#     print(c)
-#     return classes
+
 
 # # @lru_cache(maxsize=None)
 # def get_compound_hets_from_variant_file(variants, variant_file_path):
@@ -401,12 +419,12 @@ def are_input_consequences_valid(input_consequence_types):
         invalid = input_consequence_types - valid_consequence_types
         invalid = ''.join(sorted([f'\t{x}\n' for x in invalid]))
         valid = ''.join(sorted([f'\t{x}\n' for x in valid_consequence_types]))
-        print('The following provided consequences types are not valid:')
-        print(invalid)
-        print('Please select from the following:')
-        print(valid)
+        e = '...the following provided consequences types are not valid: \n'
+        e += invalid
+        e += '\nPlease select from the following valid consequences: \n'
+        e += valid
+        logging.error(e)
         return False
-    
     return True
 
 def filter_annotation_data_maf(annotation_data, minimum_maf=None, maximum_maf=None):
@@ -529,6 +547,15 @@ def filter_annotation_data_row_on_consequences(row, consequences_without_severit
     Currently we allow multiple Consequences ie
         synonymous variant&NMD transcript variant
     But it is not clear how to treat them at the moment.
+
+    consequences_with_severity_measures
+        consequences: a list of consequences
+        filters_conjunction: the boolean conjunction (or, and) which applies
+            the to the severity measures
+        severity_measures: dict, the filters_conjunction applies to these
+            CADD_PHRED: int, the smallest allowed score
+            POLYPHEN: string, the least severe score allowed
+            SIFT: string, the least severe score allowed
     """
     observed_consequences = row['Consequence']
     if '&' not in observed_consequences:
@@ -544,27 +571,36 @@ def filter_annotation_data_row_on_consequences(row, consequences_without_severit
     # consequences_with_severity_measures
     wanted_consequences = set(consequences_with_severity_measures['consequences'])
     if wanted_consequences & observed_consequences:
-        SIFT = row['SIFT']
-        SIFT_encoded = SIFT_PREDICTIONS_LO_HI.get(SIFT, pd.np.nan)
+        
+        # CADD_PHRED
         CADD_PHRED = row['CADD_PHRED']
-        PolyPhen = row['PolyPhen']
-        PolyPhen_encoded = POLYPHEN_PREDICTIONS_LO_HI.get(PolyPhen, pd.np.nan)
-        
         _ = consequences_with_severity_measures['severity_measures']['CADD_PHRED']
-        CADD_PHRED_test = CADD_PHRED >= _
-        
+        CADD_PHRED_test = CADD_PHRED >= _        
+
+        # PolyPhen
+        PolyPhen = row['PolyPhen']
+        if pd.isnull(PolyPhen):
+            PolyPhen_encoded = PolyPhen
+        else:
+            PolyPhen_encoded = POLYPHEN_PREDICTIONS_LO_HI[PolyPhen]
         _ = consequences_with_severity_measures['severity_measures_encoded']['POLYPHEN']
-        PolyPhen_test = PolyPhen_encoded >= _
-        
+        PolyPhen_test = PolyPhen_encoded >= _        
+
+        # SIFT
+        SIFT = row['SIFT']
+        if pd.isnull(SIFT):
+            SIFT_encoded = SIFT
+        else:
+            SIFT_encoded = SIFT_PREDICTIONS_LO_HI[SIFT]
         _ = consequences_with_severity_measures['severity_measures_encoded']['SIFT']
         SIFT_test = SIFT_encoded >= _
 
+        # Combine all of the tests
         tests = [CADD_PHRED_test, PolyPhen_test, SIFT_test]
-
         conjnction = consequences_with_severity_measures['filters_conjunction']
-        if conjnction ==  'or':
+        if conjnction == 'or':
             outcome = any(tests)
-        elif conjnction ==  'and':
+        elif conjnction == 'and':
             outcome = all(tests)
         else:
             raise Exception(f'Unrecognized conjuction: {conjnction}')
@@ -588,20 +624,40 @@ def get_info_score_from_variant_file(chrom, start, end, variant_file, **kwargs):
     """
     records = list(variant_file.fetch(chrom, start, end))
     n_records = 0
+    info_score = pd.np.nan # should be 1, but just case
     for record in records:
-        n_records += 1
-        if n_records > 1:
-            raise Exception(f'More than one record found for {chrom}:{start}-{end}')
-        info_score = record.info['INFO']
+        this_info_score = record.info['INFO']
+        if (this_info_score < info_score) or pd.isnull(info_score):
+            info_score = this_info_score
     return info_score
 
 
-def append_info_scores_from_variant_file(df, variant_file):
+def append_info_scores_from_variant_files(df, variant_file_paths, minimum_INFO=0.8, **kwargs):
+    columns = []
+    for study_name, variant_file_path in variant_file_paths.items():
+        logging.info(f'...appending INFO scores for {study_name}.')
+        df, column = append_info_scores_from_variant_file(df, variant_file_path, study_name, minimum_INFO)
+        if len(df):
+            columns.append(column)
+    i = ~df[columns].isnull().all(axis=1)
+    df = df[i].copy().reset_index(drop=True)
+    return df
+
+
+def append_info_scores_from_variant_file(df, variant_file, study_name, minimum_INFO):
+    column = f'INFO_score_{study_name}'
+    if len(df) == 0:
+        return df, column
     columns = ['id', 'chrom', 'start', 'stop']
+
     variants = df[columns].drop_duplicates('id').copy()
+    if len(variants) == 0:
+        return pd.DataFrame(), column
     f = lambda x: get_info_score_from_variant_file(x['chrom'], x['start'], x['stop'], variant_file)
-    variants['INFO_score'] = variants.apply(f, axis=1)
-    return pd.merge(df, variants, on=columns, how='left')
+    variants[column] = variants.apply(f, axis=1)
+    i = variants[column] >= minimum_INFO
+    passed = variants[i]
+    return pd.merge(df, passed, on=columns, how='left'), column
 
 
 def filter_annotation_data_on_INFO_score(df, minimimum_INFO_score):
@@ -609,93 +665,134 @@ def filter_annotation_data_on_INFO_score(df, minimimum_INFO_score):
 
 
 def get_variants_from_df(df):
-    variants = df.drop_duplicates(['chrom', 'start', 'stop'])
+    variants = df.drop_duplicates(['chrom', 'start', 'stop', 'id'])
     L = []
     for _, variant in variants.iterrows():
         L.append({
             'seq_region_name': variant['chrom'],
             'start': variant['start'],
-            'end': variant['stop']
+            'end': variant['stop'],
+            'id':  variant['id'],
         })
     return L
 
 
-def main():
-    gene_name = 'NOD2' #'IL10RA' #or 'IL10R'
-    consequences_without_severity_measures = [
-        'frameshift_variant',
-        'stop_gained',
-        'start_lost',
-        'transcript_ablation',
-        'feature_truncation',
-        'incomplete_terminal_codon_variant',
-        'inframe_insertion',
-        'regulatory_region_variant',
-        '3_prime_UTR_variant',
-        'stop_gained',
-        'stop_retained_variant',
-        'regulatory_region_amplification',
-        'protein_altering_variant',
-        'transcript_amplification',
-        'transcript_ablation',
-        'splice_acceptor_variant',
-        'coding_sequence_variant',
-        'inframe_deletion',
-        'feature_elongation',
-        'NMD_transcript_variant',
-        'regulatory_region_ablation',
-        'splice_region_variant',
-        'stop_lost',
-        'splice_donor_variant',
-        'start_lost',
-        'TFBS_ablation',
-        'TFBS_amplification',
-        'frameshift_variant',
-    ]
-
-    consequences_with_severity_measures = {
-        'consequences': {
-            'missense_variant',
-        },
-        'filters_conjunction': 'or', # in the case of 'and' NA are counted as False and should not be returned, or
-        'severity_measures': {
-                'SIFT': 'deleterious',
-                'POLYPHEN': 'possibly damaging',
-                'CADD_PHRED': 10,
-        }
-    }
-    maximum_maf = 0.1
+def read_yaml(yaml_path):
+    with open(yaml_path) as f:
+        return yaml.load(f)
     
-    variant_file_path = '/lustre/scratch119/realdata/mdt2/teams/anderson/users/dr9/new_imputation_dan/all_studies.sampleids_cleaned_to_lowercase.bcf.gz' 
+    
+def variant_genotypes_to_string(g):
+    formatter = {'float_kind':lambda x: '%.0f' % x}
+    s = np.array2string(g, formatter=formatter, separator='|')
+    
+    # Trim the brackets
+    s = s[1:-1]
+    
+    # Replace nans with .
+    s = s.replace('nan', '.')
+    return s
+
+
+def sample_genotypes_to_string(genotypes):
+    return np.apply_along_axis(
+        variant_genotypes_to_string,
+        axis=1,
+        arr=genotypes
+    )
+
+def all_genotypes_to_df(GENOTYPES, variants):
+    strings = [sample_genotypes_to_string(g) for g in GENOTYPES]
+    ids = [v['id'] for v in variants]
+    return pd.DataFrame(strings, columns=ids)
+
+
+def main(consequences_with_severity_measures, consequences_without_severity_measures,
+    gene_name, maximum_maf, out_directory, yaml_path):
+
+    os.makedirs(out_directory, exist_ok=True)
+
+    filename = f'{gene_name}.log'
+    filepath = os.path.join(out_directory, filename)
+    logging.basicConfig(level=logging.DEBUG, filename=filepath, filemode="w", format="%(levelname)-4s %(message)s")
 
     consequences_with_severity_measures = encode_severity_measures(consequences_with_severity_measures)
     consequences = consequences_with_severity_measures['consequences']
     assert are_input_consequences_valid(consequences)
 
     region_info = get_region_info_for_gene(gene_name)
-    print(region_info)
+    logging.info(f'Region info found for {gene_name}: {region_info}')
+    
     annotation_data = get_annotation_data(**region_info)
-
+    logging.info(f'Number of entries found in annotation data: len(annotation_data)')
+    logging.info(f'Applying maximum MAF filter {maximum_maf}.')
     maf_filtered_annotation_data = filter_annotation_data_maf(annotation_data, maximum_maf=maximum_maf)
-    print(len(maf_filtered_annotation_data))
+    logging.info(f'...number of entries that pass: {len(maf_filtered_annotation_data)}')
+    min_maf = min(maf_filtered_annotation_data['RefPanelAF'])
+    max_maf = max(maf_filtered_annotation_data['RefPanelAF'])
+    logging.info(f'...min maf now: {min_maf}')
+    logging.info(f'...max maf now: {max_maf}')
 
-    print(min(annotation_data['RefPanelAF']))
-    print(max(annotation_data['RefPanelAF']))
-    print(min(maf_filtered_annotation_data['RefPanelAF']))
-    print(max(maf_filtered_annotation_data['RefPanelAF']))
-
+    logging.info(f'Applying consequence filters.')
     consequence_maf_filtered_annotation_data = filter_annotation_data_on_consequences(
         maf_filtered_annotation_data,
         consequences_without_severity_measures,
         consequences_with_severity_measures
     )
+    logging.info(f'...number of entries that pass: {len(consequence_maf_filtered_annotation_data)}')
+    logging.info(f'Applying INFO score filter.')
+    info_consequence_maf_filtered_annotation_data = append_info_scores_from_variant_files(
+        consequence_maf_filtered_annotation_data,
+        variant_file_paths
+    )
+    logging.info(f'...number of entries that pass: {len(info_consequence_maf_filtered_annotation_data)}')
 
-    variants = get_variants_from_df(consequence_maf_filtered_annotation_data)
-    GENOTYPES, samples = get_genotypes_from_variant_file(variants, variant_file_path)
+
+    variants = get_variants_from_df(info_consequence_maf_filtered_annotation_data)
+    n_variants_found = len(variants)
+    logging.info(f'Number of variants found after all filters applied: {n_variants_found}.')
+    if n_variants_found == 0:
+        logging.info('...No variants found so exiting.')
+        sys.exit()
+
+    logging.info(f'Extracting genotype data from VCFs.')
+    GENOTYPES, samples, found_variants = get_genotypes_from_variant_file(variants, variant_file_path)
+    n_variants_in_imputed_found = len(found_variants)
+    logging.info(f'...Found {n_variants_in_imputed_found} genotypes in imputed data.')
+    if n_variants_in_imputed_found == 0:
+        logging.info('...None of the variants found in imputed data. Exiting.')
+        sys.exit()
+
+    logging.info(f'Classifying extracted genotypes.')
     classes = classify_all_genotypes(GENOTYPES, samples)
+    logging.info('...value counts of classes:')
+    logging.info(classes.genotype_class.value_counts(dropna=False))
+    logging.info(f'Saving to genotypes to tsv.')
+    genotypes = all_genotypes_to_df(GENOTYPES, variants)
+    sample_data = classes.join(genotypes)
 
-    consequence_maf_filtered_annotation_data.to_csv('consequences.tsv', index=False, sep='\t')
-    classes.to_csv('classes.tsv', index=False, sep='\t')
+    # Save all files
+    #/path/to/root
+    # GENENAME.(this python file which specifies the input filters)
+    # GENENAME.variant_consquences
+    # GENENAME.samples (includes the phased genotypes with rsid as header)
+    # GENENAME.vcf
+    
+    filename = f'{gene_name}.variant_consquences.tsv'
+    filepath = os.path.join(out_directory, filename)
+    info_consequence_maf_filtered_annotation_data.to_csv(filepath, index=False, sep='\t')
+
+    filename = f'{gene_name}.samples.tsv'
+    filepath = os.path.join(out_directory, filename)
+    sample_data.to_csv(filepath, index=False, sep='\t')
+
+    _, filename = os.path.split(yaml_path)
+    filepath = os.path.join(out_directory, filename)
+    copyfile(yaml_path, filepath)
+
 
 if __name__ == '__main__':
-    main()
+    yaml_path = sys.argv[1]
+    args = read_yaml(yaml_path)
+    args['yaml_path'] = yaml_path
+    main(**args)
