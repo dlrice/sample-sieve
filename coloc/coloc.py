@@ -26,6 +26,8 @@ url_server = 'https://grch37.rest.ensembl.org'
 
 annotation_vcf_file_path = '/lustre/scratch115/realdata/mdt0/teams/barrett/users/dr9/vep-annotation/all_studies.sampleids_cleaned_to_lowercase.bcf.gz.annot.vcf.gz'
 variant_file_path = '/lustre/scratch119/realdata/mdt2/teams/anderson/users/dr9/new_imputation_dan/all_studies.sampleids_cleaned_to_lowercase.bcf.gz' 
+phenotype_values_path = '/nfs/users/nfs_d/dr9/notebooks/all_study_sample_ids_disease_case_control.csv'
+merged_2D_4D_path = '/nfs/users/nfs_d/dr9/notebooks/coloc/merged_2D_4D.tsv'
 
 root_file_path = '/lustre/scratch119/realdata/mdt2/teams/anderson/users/dr9/new_imputation_dan/{}.sampleids_cleaned_to_lowercase.bcf.gz'
 studies = ['GWAS1', 'GWAS2', 'GWAS3', 'ichip', 'newwave']
@@ -701,10 +703,32 @@ def sample_genotypes_to_string(genotypes):
         arr=genotypes
     )
 
+
 def all_genotypes_to_df(GENOTYPES, variants):
     strings = [sample_genotypes_to_string(g) for g in GENOTYPES]
     ids = [v['id'] for v in variants]
     return pd.DataFrame(strings, columns=ids)
+
+
+def append_phenotype_values(classes):
+    phenotype_values = pd.read_csv(phenotype_values_path)
+    df = pd.merge(classes, phenotype_values, on='sanger_sample_id', how='left')
+    return df
+
+
+def query_HLA_imputed_data(allele):
+    """
+    All of the data at:
+        /lustre/scratch115/projects/ibdgwas/HLA/HLA_imputations/
+    has been merged. The steps are in in the notebook:
+        Merge HLA imputations.ipynb
+
+    TODO: is there anything else to query on other than allele?
+    """
+    df = pd.read_csv(merged_2D_4D_path, sep='\t', dtype=object)
+    i = (df.allele1 == allele) | (df.allele2 == allele)
+    return df[i]
+
 
 
 def main(consequences_with_severity_measures, consequences_without_severity_measures,
@@ -767,9 +791,15 @@ def main(consequences_with_severity_measures, consequences_without_severity_meas
     classes = classify_all_genotypes(GENOTYPES, samples)
     logging.info('...value counts of classes:')
     logging.info(classes.genotype_class.value_counts(dropna=False))
-    logging.info(f'Saving to genotypes to tsv.')
+
+    # phenotype_values_classes = classes
+    logging.info(f'Appending case/control status & disease type.')
+    phenotype_values_classes = append_phenotype_values(classes)
+
+
+    logging.info(f'Saving genotypes to tsv.')
     genotypes = all_genotypes_to_df(GENOTYPES, variants)
-    sample_data = classes.join(genotypes)
+    sample_data = phenotype_values_classes.join(genotypes)
 
     # Save all files
     #/path/to/root
