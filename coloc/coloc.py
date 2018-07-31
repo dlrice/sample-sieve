@@ -28,6 +28,7 @@ annotation_vcf_file_path = '/lustre/scratch115/realdata/mdt0/teams/barrett/users
 variant_file_path = '/lustre/scratch119/realdata/mdt2/teams/anderson/users/dr9/new_imputation_dan/all_studies.sampleids_cleaned_to_lowercase.bcf.gz' 
 phenotype_values_path = '/nfs/users/nfs_d/dr9/notebooks/all_study_sample_ids_disease_case_control.csv'
 merged_2D_4D_path = '/nfs/users/nfs_d/dr9/notebooks/coloc/merged_2D_4D.tsv'
+ibdbr_sangerids_path = '/nfs/users/nfs_d/dr9/notebooks/ibdbr_sangerids.csv'
 
 root_file_path = '/lustre/scratch119/realdata/mdt2/teams/anderson/users/dr9/new_imputation_dan/{}.sampleids_cleaned_to_lowercase.bcf.gz'
 studies = ['GWAS1', 'GWAS2', 'GWAS3', 'ichip', 'newwave']
@@ -716,19 +717,29 @@ def append_phenotype_values(classes):
     return df
 
 
-def query_HLA_imputed_data(allele):
+def query_HLA_imputed_data(gene, allele, resolution, min_probability=0.5, exclude=False):
     """
     All of the data at:
         /lustre/scratch115/projects/ibdgwas/HLA/HLA_imputations/
     has been merged. The steps are in in the notebook:
         Merge HLA imputations.ipynb
 
-    TODO: is there anything else to query on other than allele?
+    exclude function:
+
+        
+
     """
     df = pd.read_csv(merged_2D_4D_path, sep='\t', dtype=object)
     i = (df.allele1 == allele) | (df.allele2 == allele)
+    # i &= (df.allele1 == allele) | (df.allele2 == allele)
     return df[i]
 
+
+def filter_on_presence_in_ibdbr(df):
+    ibdbr_sangerids = pd.read_csv(ibdbr_sangerids_path)
+    ibdbr_sangerids = set(ibdbr_sangerids['sangerid'])
+    i = df['sanger_sample_id'].isin(ibdbr_sangerids)
+    return df[i]
 
 
 def main(consequences_with_severity_measures, consequences_without_severity_measures,
@@ -763,18 +774,18 @@ def main(consequences_with_severity_measures, consequences_without_severity_meas
         consequences_without_severity_measures,
         consequences_with_severity_measures
     )
-    logging.info(f'...number of entries that pass: {len(consequence_maf_filtered_annotation_data)}')
+    logging.info(f'...number of consequence entries that pass in VEP file: {len(consequence_maf_filtered_annotation_data)}')
+
     logging.info(f'Applying INFO score filter.')
     info_consequence_maf_filtered_annotation_data = append_info_scores_from_variant_files(
         consequence_maf_filtered_annotation_data,
         variant_file_paths
     )
-    logging.info(f'...number of entries that pass: {len(info_consequence_maf_filtered_annotation_data)}')
-
+    logging.info(f'...number of consequence entries that pass: {len(info_consequence_maf_filtered_annotation_data)}')
 
     variants = get_variants_from_df(info_consequence_maf_filtered_annotation_data)
     n_variants_found = len(variants)
-    logging.info(f'Number of variants found after all filters applied: {n_variants_found}.')
+    logging.info(f'Number of unique variants found: {n_variants_found}.')
     if n_variants_found == 0:
         logging.info('...No variants found so exiting.')
         sys.exit()
@@ -787,6 +798,8 @@ def main(consequences_with_severity_measures, consequences_without_severity_meas
         logging.info('...None of the variants found in imputed data. Exiting.')
         sys.exit()
 
+
+
     logging.info(f'Classifying extracted genotypes.')
     classes = classify_all_genotypes(GENOTYPES, samples)
     logging.info('...value counts of classes:')
@@ -796,10 +809,17 @@ def main(consequences_with_severity_measures, consequences_without_severity_meas
     logging.info(f'Appending case/control status & disease type.')
     phenotype_values_classes = append_phenotype_values(classes)
 
-
     logging.info(f'Saving genotypes to tsv.')
     genotypes = all_genotypes_to_df(GENOTYPES, variants)
     sample_data = phenotype_values_classes.join(genotypes)
+
+    logging.info(f'Incudling only samples in the IBD Bioresource.')
+    sample_data = filter_on_presence_in_ibdbr(sample_data)
+    n_samples = len(sample_data)
+    logging.info(f'...found {n_samples}.')
+    if n_samples == 0:
+        logging.info('...No samples found. Exiting.')
+        sys.exit()
 
     # Save all files
     #/path/to/root
