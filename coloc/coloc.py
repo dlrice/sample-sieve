@@ -531,6 +531,16 @@ def get_annotation_data(chrom, start, end, **kwargs):
     return df
 
 
+def filter_annotation_data_on_gene_name(df, gene_name):
+    """
+    Returns only those annotation rows with provided gene_name.
+    Fixes https://github.com/dlrice/coloc/issues/2
+    """
+    index = df['SYMBOL'] == gene_name
+    df = df[index].reset_index(drop=True)
+    return df
+
+
 def filter_annotation_data_on_consequences(df, consequences_without_severity_measures, 
                                            consequences_with_severity_measures):
     f = lambda row: filter_annotation_data_row_on_consequences(
@@ -759,7 +769,12 @@ def main(consequences_with_severity_measures, consequences_without_severity_meas
     logging.info(f'Region info found for {gene_name}: {region_info}')
     
     annotation_data = get_annotation_data(**region_info)
-    logging.info(f'Number of entries found in annotation data: len(annotation_data)')
+    logging.info(f'Number of entries found in annotation data: {len(annotation_data)}')
+
+
+    annotation_data = filter_annotation_data_on_gene_name(annotation_data, gene_name)
+    logging.info(f'Number of entries found in annotation data with correct gene name {gene_name}: {len(annotation_data)}')
+
     logging.info(f'Applying maximum MAF filter {maximum_maf}.')
     maf_filtered_annotation_data = filter_annotation_data_maf(annotation_data, maximum_maf=maximum_maf)
     logging.info(f'...number of entries that pass: {len(maf_filtered_annotation_data)}')
