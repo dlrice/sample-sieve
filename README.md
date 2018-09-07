@@ -1,9 +1,12 @@
 To run
 ------
+```
 ./sample-sieve.sh <path/to/yaml>
+```
 
 Example YAML file
 -----------------
+```
 gene_name: NOD2
 maximum_maf: 0.1
 consequences_without_severity_measures: 
@@ -18,7 +21,7 @@ consequences_with_severity_measures:
     POLYPHEN: possibly damaging
     SIFT: deleterious
 out_directory: /lustre/scratch115/teams/barrett/users/dr9/sample-sieve-output
-
+```
 
 YAML file issues
 ----------------
