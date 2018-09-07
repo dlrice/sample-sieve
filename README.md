@@ -1,6 +1,6 @@
 To run
 ------
-./coloc.sh <path/to/yaml>
+./sample-sieve.sh <path/to/yaml>
 
 Example YAML file
 -----------------
@@ -17,7 +17,7 @@ consequences_with_severity_measures:
     CADD_PHRED: 10
     POLYPHEN: possibly damaging
     SIFT: deleterious
-out_directory: /lustre/scratch115/teams/barrett/users/dr9/coloc
+out_directory: /lustre/scratch115/teams/barrett/users/dr9/sample-sieve-output
 
 
 YAML file issues
@@ -27,7 +27,5 @@ For issues with the YAML format please copy/paste your file into http://www.yaml
 
 Notes
 -----
-source activate /nfs/users/nfs_d/dr9/projects/coloc/coloc-env
-source activate ./coloc-env
-source deactivate /nfs/users/nfs_d/dr9/projects/coloc/coloc-env
-source deactivate ./coloc-env
+source activate ./sample-sieve-env
+source deactivate ./sample-sieve-env

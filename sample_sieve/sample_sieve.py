@@ -9,28 +9,24 @@ import yaml
 from shutil import copyfile
 import os
 import logging
+from collections import defaultdict
 
 """
-take a list of vcfs
-
-Check input, non-overlapping csqs, allow zero entries in one
-
-can we have case/ctrl status in the output IBD/UC/CD ideally
-
-/lustre/scratch115/projects/ibdgwas/HLA/HLA_imputations/2D/best_guess/GWAS3
-
+TODO
+    take a list of vcfs
+    Check input, non-overlapping csqs, allow zero entries in one
 """
 
-# url_server = 'https://rest.ensembl.org'
-url_server = 'https://grch37.rest.ensembl.org'
+# url_server = 'https://rest.ensembl.org'      # GRCH38
+url_server = 'https://grch37.rest.ensembl.org' # GRCH37
 
 annotation_vcf_file_path = '/lustre/scratch115/realdata/mdt0/teams/barrett/users/dr9/vep-annotation/all_studies.sampleids_cleaned_to_lowercase.bcf.gz.annot.vcf.gz'
-variant_file_path = '/lustre/scratch119/realdata/mdt2/teams/anderson/users/dr9/new_imputation_dan/all_studies.sampleids_cleaned_to_lowercase.bcf.gz' 
-phenotype_values_path = '/nfs/users/nfs_d/dr9/notebooks/all_study_sample_ids_disease_case_control.csv'
-merged_2D_4D_path = '/nfs/users/nfs_d/dr9/notebooks/coloc/merged_2D_4D.tsv'
-ibdbr_sangerids_path = '/nfs/users/nfs_d/dr9/notebooks/ibdbr_sangerids.csv'
+variant_file_path = '/lustre/scratch115/realdata/mdt0/projects/ibdgwas/post_imputation/Dan_Merged_Studies/all_studies.sampleids_cleaned_to_lowercase.bcf.gz' 
+phenotype_values_path = '/lustre/scratch119/humgen/teams/anderson/projects/dan-sample-sieve-data/all_study_sample_ids_disease_case_control.csv'
+merged_2D_4D_path = '/lustre/scratch119/humgen/teams/anderson/projects/dan-sample-sieve-data/merged_2D_4D.tsv'
+ibdbr_sangerids_path = '/lustre/scratch119/humgen/teams/anderson/projects/dan-sample-sieve-data/ibdbr_sangerids.csv'
 
-root_file_path = '/lustre/scratch119/realdata/mdt2/teams/anderson/users/dr9/new_imputation_dan/{}.sampleids_cleaned_to_lowercase.bcf.gz'
+root_file_path = '/lustre/scratch115/realdata/mdt0/projects/ibdgwas/post_imputation/Dan_Merged_Studies/{}.sampleids_cleaned_to_lowercase.bcf.gz'
 studies = ['GWAS1', 'GWAS2', 'GWAS3', 'ichip', 'newwave']
 variant_file_paths = {study: VariantFile(root_file_path.format(study)) for study in studies}
 
@@ -346,9 +342,9 @@ def classify_sample_genotypes(genotypes):
         return 'het', max(n_alt)
     
     reference = np.array([0.,0.])
-    found_reference = (reference == genotypes).all()
+    found_reference = (reference == genotypes).all(axis=1)
     if found_reference.all():
-        n_reference = len(reference)
+        n_reference = len(found_reference)
         return 'ref', n_reference
 
 
@@ -534,7 +530,7 @@ def get_annotation_data(chrom, start, end, **kwargs):
 def filter_annotation_data_on_gene_name(df, gene_name):
     """
     Returns only those annotation rows with provided gene_name.
-    Fixes https://github.com/dlrice/coloc/issues/2
+    Fixes https://github.com/dlrice/sample-sieve/issues/2
     """
     index = df['SYMBOL'] == gene_name
     df = df[index].reset_index(drop=True)
@@ -727,22 +723,102 @@ def append_phenotype_values(classes):
     return df
 
 
-def query_HLA_imputed_data(gene, allele, resolution, min_probability=0.5, exclude=False):
+def filter_HLA_imputed_data(sample_data, include, exclude=None, min_probability=0.5):
+    hla = query_HLA_imputed_data(include=include, exclude=exclude, min_probability=min_probability)
+    hla = subset_on_resolution(hla, include, exclude)
+    hla = tranpose_hla(hla)
+    print('hla.head()')
+    print(hla.head())
+    print('sample_data.head()')
+    print(sample_data.head())
+    df = pd.merge(hla, sample_data, how='inner', on='sanger_sample_id')
+    return df
+
+
+def query_HLA_imputed_data(include, min_probability=0.5, exclude=None):
     """
+    include = {
+        'HLA_B': '07:02',
+        'HLA_B': '08:01',
+    }
+    
+    exclude = {
+        HLA_A: '11',
+    }
+
+    output
+
+    HLA_B           HLA_B_prob
+    07:02/07:02     0.6
+
+    if an individual doesn't have the gene (because probability << 1)
+    then we should ignore that person because we have no idea about what alleles
+    they actually have
+
+    Step 1. Filter on probability
+    Step 2. Consider only individuals who have all genes/alleles
+
     All of the data at:
         /lustre/scratch115/projects/ibdgwas/HLA/HLA_imputations/
     has been merged. The steps are in in the notebook:
         Merge HLA imputations.ipynb
-
-    exclude function:
-
-        
-
     """
     df = pd.read_csv(merged_2D_4D_path, sep='\t', dtype=object)
-    i = (df.allele1 == allele) | (df.allele2 == allele)
-    # i &= (df.allele1 == allele) | (df.allele2 == allele)
-    return df[i]
+
+    df = df.astype({'prob': float})
+    whitelist = set(df['sample_id_lowercase'])
+    genes = set()
+    for gene, allele in include.items():
+        genes.add(gene)
+        print(gene, allele)
+        i = (df['gene'] == gene) & (df['allele1'] == allele) & (df['prob'] >= min_probability)
+        i |= (df['gene'] == gene) & (df['allele2'] == allele) & (df['prob'] >= min_probability)
+        whitelist &= set(df.loc[i, 'sample_id_lowercase'])
+
+    for gene, allele in exclude.items():
+        genes.add(gene)
+        print(gene, allele)
+        for sample_id_lowercase, group in df[df['gene'] == gene].groupby('sample_id_lowercase'):
+            i = (group.allele1 == allele) | (group.allele2 == allele)
+            if sum(i):
+                if sample_id_lowercase in whitelist:
+                    whitelist.remove(sample_id_lowercase)
+
+    i = df['sample_id_lowercase'].isin(whitelist)
+    i &= df['gene'].isin(genes)
+    
+    return df[i].copy().reset_index(drop=True)
+
+
+def get_resulution(allele):
+    if ':' in allele:
+        return '4D'
+    return '2D'
+
+
+def subset_on_resolution(df, hla_include, hla_exclude):
+    i = pd.Series([False]*len(df))
+    for d in [hla_include, hla_exclude]:
+        for gene, allele in d.items():
+            resolution = get_resulution(allele)
+            print(resolution, gene)
+            i |= ((df['resolution'] == resolution) & (df['gene'] == gene))
+    return df[i].copy().reset_index(drop=True)
+
+
+def tranpose_hla(df):
+    d = defaultdict(dict)
+    for _, row in df.iterrows():
+        v = f'{row.allele1}/{row.allele2}({row.prob:.2})'
+        d[row.sample_id_lowercase][row.gene] = v
+        d[row.sample_id_lowercase]['study'] = row.study
+
+    L = []
+    for k, v in d.items():
+        v['sanger_sample_id'] = k
+        L.append(v)
+    
+    return pd.DataFrame(L)
 
 
 def filter_on_presence_in_ibdbr(df):
@@ -753,7 +829,8 @@ def filter_on_presence_in_ibdbr(df):
 
 
 def main(consequences_with_severity_measures, consequences_without_severity_measures,
-    gene_name, maximum_maf, out_directory, yaml_path):
+    gene_name, maximum_maf, out_directory, yaml_path, hla_include=None, 
+    hla_exclude=None, IBD_Bioresource_only=False):
 
     os.makedirs(out_directory, exist_ok=True)
 
@@ -799,6 +876,8 @@ def main(consequences_with_severity_measures, consequences_without_severity_meas
     logging.info(f'...number of consequence entries that pass: {len(info_consequence_maf_filtered_annotation_data)}')
 
     variants = get_variants_from_df(info_consequence_maf_filtered_annotation_data)
+    # TODO: manually add more variants if needed
+
     n_variants_found = len(variants)
     logging.info(f'Number of unique variants found: {n_variants_found}.')
     if n_variants_found == 0:
@@ -813,7 +892,7 @@ def main(consequences_with_severity_measures, consequences_without_severity_meas
         logging.info('...None of the variants found in imputed data. Exiting.')
         sys.exit()
 
-
+    logging.info(f'Querying.')
 
     logging.info(f'Classifying extracted genotypes.')
     classes = classify_all_genotypes(GENOTYPES, samples)
@@ -828,13 +907,17 @@ def main(consequences_with_severity_measures, consequences_without_severity_meas
     genotypes = all_genotypes_to_df(GENOTYPES, variants)
     sample_data = phenotype_values_classes.join(genotypes)
 
-    logging.info(f'Incudling only samples in the IBD Bioresource.')
-    sample_data = filter_on_presence_in_ibdbr(sample_data)
-    n_samples = len(sample_data)
-    logging.info(f'...found {n_samples}.')
-    if n_samples == 0:
-        logging.info('...No samples found. Exiting.')
-        sys.exit()
+    if hla_include or hla_exclude:
+        sample_data = filter_HLA_imputed_data(sample_data, include=hla_include, exclude=hla_exclude)
+
+    if IBD_Bioresource_only:
+        logging.info(f'Incudling only samples in the IBD Bioresource.')
+        sample_data = filter_on_presence_in_ibdbr(sample_data)
+        n_samples = len(sample_data)
+        logging.info(f'...found {n_samples}.')
+        if n_samples == 0:
+            logging.info('...No samples found. Exiting.')
+            sys.exit()
 
     # Save all files
     #/path/to/root
